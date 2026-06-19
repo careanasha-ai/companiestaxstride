@@ -10,6 +10,8 @@ from sqlalchemy import select, and_
 from app.core.config import settings
 from app.db.models.integration import Integration, ShopifyTransaction
 from app.db.models.company import Company
+from app.services.shopify.classifier import sale_classifier
+from app.services.shopify.fx_service import fx_service
 from loguru import logger
 
 
@@ -174,49 +176,49 @@ class ShopifyService:
                                    .get("shop_money", {}).get("amount", "0")))
                 discount = Decimal(str(order.get("total_discounts", "0")))
 
-                # VAT calculation
+                # VAT from tax lines
                 tax_lines = order.get("tax_lines", [])
                 vat_amount = sum(
                     Decimal(str(t.get("price", "0"))) for t in tax_lines
                 )
                 vat_rate = Decimal("20.00")
                 if tax_lines:
-                    vat_rate = Decimal(str(tax_lines[0].get("rate", 0.20))) * 100
+                    vat_rate = (Decimal(str(tax_lines[0].get("rate", 0.20))) * 100).quantize(Decimal("0.01"))
 
-                # Currency conversion to GBP
-                exchange_rate = Decimal("1")
-                total_price_gbp = total_price
-                if currency != "GBP":
-                    # In production, fetch live exchange rate
-                    exchange_rate = await self._get_exchange_rate(currency, "GBP")
-                    total_price_gbp = total_price * exchange_rate
+                # Currency conversion using live FX service
+                total_price_gbp, exchange_rate = await fx_service.convert_to_gbp(
+                    total_price, currency
+                )
 
-                # Determine sale type
-                shipping_addr = order.get("shipping_address", {})
-                country_code = shipping_addr.get("country_code", "GB")
-                is_uk = country_code == "GB"
-                is_eu = country_code in self._eu_country_codes()
-                is_export = not is_uk and not is_eu
+                # Classify sale using classifier
+                classification = sale_classifier.classify_from_order(order)
 
                 # Customer info
-                customer = order.get("customer", {})
+                shipping_addr = order.get("shipping_address") or order.get("billing_address") or {}
+                customer = order.get("customer") or {}
                 customer_name = (
                     f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip()
+                    or shipping_addr.get("name")
                     or None
                 )
+
+                # Parse order date
+                created_at_str = order.get("created_at", "")
+                try:
+                    order_date = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+                except Exception:
+                    order_date = datetime.utcnow()
 
                 transaction = ShopifyTransaction(
                     integration_id=integration.id,
                     company_id=integration.company_id,
                     shopify_order_id=shopify_id,
                     shopify_order_number=str(order.get("order_number", "")),
-                    order_date=datetime.fromisoformat(
-                        order["created_at"].replace("Z", "+00:00")
-                    ),
+                    order_date=order_date,
                     customer_name=customer_name,
                     customer_email=customer.get("email"),
-                    customer_country=shipping_addr.get("country"),
-                    customer_country_code=country_code,
+                    customer_country=classification.country_name,
+                    customer_country_code=classification.country_code,
                     subtotal=subtotal,
                     shipping=shipping,
                     discount=discount,
@@ -226,9 +228,9 @@ class ShopifyService:
                     total_price_gbp=total_price_gbp,
                     vat_amount=vat_amount,
                     vat_rate=vat_rate,
-                    is_uk_sale=is_uk,
-                    is_eu_sale=is_eu,
-                    is_export=is_export,
+                    is_uk_sale=classification.is_uk_sale,
+                    is_eu_sale=classification.is_eu_sale,
+                    is_export=classification.is_export,
                     financial_status=order.get("financial_status"),
                     fulfillment_status=order.get("fulfillment_status"),
                     line_items=order.get("line_items", []),
@@ -314,25 +316,7 @@ class ShopifyService:
             "transaction_count": row.count or 0,
         }
 
-    async def _get_exchange_rate(self, from_currency: str, to_currency: str) -> Decimal:
-        """Fetch live exchange rate (simplified — use a proper FX API in production)."""
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    f"https://api.exchangerate-api.com/v4/latest/{from_currency}"
-                )
-                data = response.json()
-                rate = data.get("rates", {}).get(to_currency, 1)
-                return Decimal(str(rate))
-        except Exception:
-            return Decimal("1")
-
-    def _eu_country_codes(self) -> List[str]:
-        return [
-            "AT", "BE", "BG", "CY", "CZ", "DE", "DK", "EE", "ES", "FI",
-            "FR", "GR", "HR", "HU", "IE", "IT", "LT", "LU", "LV", "MT",
-            "NL", "PL", "PT", "RO", "SE", "SI", "SK",
-        ]
+    
 
 
 shopify_service = ShopifyService()

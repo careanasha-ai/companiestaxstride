@@ -154,18 +154,50 @@ export const paymentsApi = {
 export const integrationsApi = {
   list: () => api.get('/integrations/'),
   disconnect: (id: number) => api.delete(`/integrations/${id}`),
+
+  // Shopify OAuth
   shopifyInstall: (shop: string, companyId: number) =>
     api.get('/integrations/shopify/install', { params: { shop, company_id: companyId } }),
+
+  // Shopify manual bulk sync
   shopifySync: (integrationId: number, sinceDate?: string) =>
     api.post(`/integrations/shopify/${integrationId}/sync`, null, {
       params: { since_date: sinceDate },
     }),
+
+  // Shopify transactions list
   shopifyTransactions: (integrationId: number, params?: object) =>
     api.get(`/integrations/shopify/${integrationId}/transactions`, { params }),
+
+  // Full VAT aggregation (pre-fills MTD boxes 1-9)
+  shopifyVatAggregation: (integrationId: number, periodStart: string, periodEnd: string) =>
+    api.get(`/integrations/shopify/${integrationId}/vat-aggregation`, {
+      params: { period_start: periodStart, period_end: periodEnd },
+    }),
+
+  // Apply aggregation to a VAT return draft
+  applyVatAggregation: (
+    integrationId: number,
+    periodStart: string,
+    periodEnd: string,
+    vatReturnId: number
+  ) =>
+    api.post(`/integrations/shopify/${integrationId}/vat-aggregation/apply`, null, {
+      params: {
+        period_start: periodStart,
+        period_end: periodEnd,
+        vat_return_id: vatReturnId,
+      },
+    }),
+
+  // Legacy simple VAT summary
   shopifyVatSummary: (integrationId: number, periodStart: string, periodEnd: string) =>
     api.get(`/integrations/shopify/${integrationId}/vat-summary`, {
       params: { period_start: periodStart, period_end: periodEnd },
     }),
+
+  // FX rates
+  getFxRates: () => api.get('/integrations/fx-rates'),
 };
 
 // ─── Public API (no auth) ─────────────────────────────────────────────────────
